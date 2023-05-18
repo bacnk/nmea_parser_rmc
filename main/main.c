@@ -62,15 +62,13 @@ uint32_t getNumberFromString(uint16_t BeginAddress, char *Buffer)
 
     return hexNumber;
 }
-
 void process_gps_data(char *data, gps_info_t *gps_info)
 {
-    uint8_t pos = 0, length = 0, i = 0, valid = 0;
-    double tempf = 0;
-    uint32_t temp = 0;
+    uint8_t pos = 0, length = 0, i = 0;
     char gpsConver[200];
 
-    char *gpsMsg = strstr(data, "$GPRMC");
+    char *gpsMsg = strstr(data, "$GNRMC");
+    ESP_LOGI(TAG, "Read bytes: '%s'", gpsMsg);
     if (gpsMsg != NULL)
     {
         pos += 6; // Skip "$GPRMC"
@@ -79,27 +77,28 @@ void process_gps_data(char *data, gps_info_t *gps_info)
         pos++;
         // Extract hour
         gps_info->hour = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
+        ESP_LOGI(TAG, "Hour: %d", gps_info->hour);
         pos += 2;
 
         // Extract minute
         gps_info->minute = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
         pos += 2;
+        ESP_LOGI(TAG, "Minute: %d", gps_info->minute);
 
         // Extract second
         gps_info->second = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
         pos += 2;
-        //
+        ESP_LOGI(TAG, "Second: %d", gps_info->second);
+
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
         // Check GPS status
         if (data[pos] != 'A')
-        {
-            valid = 0;
             return;
-        }
         gps_info->status = data[pos];
-        valid = 1;
+        ESP_LOGI(TAG, "Status: %c", gps_info->status);
+
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
@@ -108,6 +107,7 @@ void process_gps_data(char *data, gps_info_t *gps_info)
         while (gpsMsg[pos + length] != '.')
             length++;
         gps_info->latitude = 0;
+
         length -= 2;
         for (i = 0; i < length; i++)
         {
@@ -118,13 +118,12 @@ void process_gps_data(char *data, gps_info_t *gps_info)
             gpsConver[i++] = gpsMsg[pos++];
         pos++;
         gpsConver[i] = '\0';
-        tempf = atof(gpsConver);
-        gps_info->latitude += tempf / 60;
+        gps_info->latitude += atof(gpsConver) / 60;
         gps_info->lat_dir = gpsMsg[pos];
         if (gpsMsg[pos] == 'S')
-            gps_info->latitude = gps_info->latitude * -1;
+            gps_info->latitude = -gps_info->latitude;
+        ESP_LOGI(TAG, "Latitude: %lf", gps_info->latitude);
 
-        //////////
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
@@ -143,25 +142,21 @@ void process_gps_data(char *data, gps_info_t *gps_info)
             gpsConver[i++] = gpsMsg[pos++];
         pos++;
         gpsConver[i] = '\0';
-        tempf = atof(gpsConver);
-        gps_info->longitude += tempf / 60;
+        gps_info->longitude += atof(gpsConver) / 60;
         gps_info->lon_dir = gpsMsg[pos];
         if (gpsMsg[pos] == 'S')
-            gps_info->longitude = gps_info->longitude * -1;
+            gps_info->longitude = -gps_info->longitude;
+        ESP_LOGI(TAG, "Longitude: %lf", gps_info->longitude);
+
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
         // knot to km/h
-        temp = getNumberFromString(pos, (char *)gpsMsg);
-        temp = temp * 1000;
-        while (gpsMsg[pos] != '.')
-            pos++;
-        pos++;
-        temp += getNumberFromString(pos, (char *)gpsMsg);
-        temp = temp * 13;
-        temp = temp / 7020;
-        gps_info->speed = temp & 0xFFFF;
-        ////////////
+        uint32_t temp = strtoul(&gpsMsg[pos], NULL, 10);
+        temp = temp * 1000 + strtoul(&gpsMsg[pos + 5], NULL, 10);
+        gps_info->speed = temp * 13 / 7020;
+        ESP_LOGI(TAG, "Speed: %f", gps_info->speed);
+
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
@@ -170,7 +165,8 @@ void process_gps_data(char *data, gps_info_t *gps_info)
             gpsConver[i++] = gpsMsg[pos++];
         gpsConver[i] = '\0';
         gps_info->course = strtof(gpsConver, NULL);
-        //
+        ESP_LOGI(TAG, "Course: %f", gps_info->course);
+
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
@@ -180,8 +176,16 @@ void process_gps_data(char *data, gps_info_t *gps_info)
         pos += 2;
         gps_info->year = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
         pos += 2;
+        ESP_LOGI(TAG, "Day: %d", gps_info->day);
+        ESP_LOGI(TAG, "Month: %d", gps_info->month);
+        ESP_LOGI(TAG, "Year: %d", gps_info->year);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "FAIL");
     }
 }
+
 void gps_task(void *pvParameters)
 {
     static const char *RX_TASK_TAG = "RX_TASK";
@@ -195,19 +199,7 @@ void gps_task(void *pvParameters)
             ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", len, data);
             ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, len, ESP_LOG_INFO);
             process_gps_data((char *)data, &gps_info);
-            ESP_LOGI(TAG, "Hour: %d", gps_info.hour);
-            ESP_LOGI(TAG, "Minute: %d", gps_info.minute);
-            ESP_LOGI(TAG, "Second: %d", gps_info.second);
-            ESP_LOGI(TAG, "Status: %c", gps_info.status);
-            ESP_LOGI(TAG, "Latitude: %lf", gps_info.latitude);
-            ESP_LOGI(TAG, "Latitude Direction: %c", gps_info.lat_dir);
-            ESP_LOGI(TAG, "Longitude: %lf", gps_info.longitude);
-            ESP_LOGI(TAG, "Longitude Direction: %c", gps_info.lon_dir);
-            ESP_LOGI(TAG, "Speed: %f", gps_info.speed);
-            ESP_LOGI(TAG, "Course: %f", gps_info.course);
-            ESP_LOGI(TAG, "Day: %d", gps_info.day);
-            ESP_LOGI(TAG, "Month: %d", gps_info.month);
-            ESP_LOGI(TAG, "Year: %d", gps_info.year);
+           
         }
     }
     free(data);
@@ -233,5 +225,6 @@ void app_main()
     uart_set_pin(GPS_UART_PORT, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     ESP_LOGI(TAG, "Year:");
     // Create GPS task
+
     xTaskCreate(gps_task, "gps_task", 2048, NULL, 5, NULL);
 }
