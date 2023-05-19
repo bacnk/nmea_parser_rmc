@@ -36,7 +36,6 @@ typedef struct
 } gps_info_t;
 
 static gps_info_t gps_info;
-
 uint32_t getNumberFromString(uint16_t BeginAddress, char *Buffer)
 {
     uint16_t i = BeginAddress;
@@ -62,6 +61,33 @@ uint32_t getNumberFromString(uint16_t BeginAddress, char *Buffer)
 
     return hexNumber;
 }
+uint8_t validCheckSum(char *data)
+{
+    uint8_t GPSCRC = 0;
+    uint8_t messageCRC = 0;
+    uint8_t i = 0;
+    messageCRC = 0;
+    for (i = 1; i < strlen(data); i++)
+    {
+      
+        if (data[i] == '*')
+        {
+            messageCRC = 0xFF;
+            break;
+        }
+        GPSCRC ^= data[i];
+    }
+    if (messageCRC != 0xFF)
+    {
+        return 0;
+    }
+    messageCRC = getNumberFromString(i + 1, data) && 0XFF;
+    if (messageCRC == GPSCRC)
+    {
+        return 1;
+    }
+    return 0;
+}
 void process_gps_data(char *data, gps_info_t *gps_info)
 {
     uint8_t pos = 0, length = 0, i = 0;
@@ -71,33 +97,38 @@ void process_gps_data(char *data, gps_info_t *gps_info)
     ESP_LOGI(TAG, "Read bytes: '%s'", gpsMsg);
     if (gpsMsg != NULL)
     {
+
+        // if (validCheckSum(gpsMsg) == 0)
+        //     return;
         pos += 6; // Skip "$GPRMC"
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
         // Extract hour
-        gps_info->hour = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
+        gps_info->hour = ((gpsMsg[pos] - '0') * 10 + (gpsMsg[pos + 1] - '0') + 7) % 24;
+
         ESP_LOGI(TAG, "Hour: %d", gps_info->hour);
         pos += 2;
 
         // Extract minute
-        gps_info->minute = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
+        gps_info->minute = (gpsMsg[pos] - '0') * 10 + (gpsMsg[pos + 1] - '0');
         pos += 2;
         ESP_LOGI(TAG, "Minute: %d", gps_info->minute);
 
         // Extract second
-        gps_info->second = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
+        gps_info->second = (gpsMsg[pos] - '0') * 10 + (gpsMsg[pos + 1] - '0');
         pos += 2;
         ESP_LOGI(TAG, "Second: %d", gps_info->second);
-
+        ESP_LOGI(TAG,"Time: %02d:%02d:%02d\n", gps_info->hour, gps_info->minute,
+        gps_info->second);
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
         // Check GPS status
         if (data[pos] != 'A')
             return;
-        gps_info->status = data[pos];
-        ESP_LOGI(TAG, "Status: %c", gps_info->status);
+        gps_info->status = gpsMsg[pos];
+        ESP_LOGI(TAG,"Status: %c\n", gps_info->status);
 
         while (gpsMsg[pos] != ',')
             pos++;
@@ -170,15 +201,17 @@ void process_gps_data(char *data, gps_info_t *gps_info)
         while (gpsMsg[pos] != ',')
             pos++;
         pos++;
-        gps_info->day = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
+        gps_info->day = (gpsMsg[pos] - '0') * 10 + (gpsMsg[pos + 1] - '0');
         pos += 2;
-        gps_info->month = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
+        gps_info->month = (gpsMsg[pos] - '0') * 10 + (gpsMsg[pos + 1] - '0');
         pos += 2;
-        gps_info->year = (data[pos] - '0') * 10 + (data[pos + 1] - '0');
+        gps_info->year = (gpsMsg[pos] - '0') * 10 + (gpsMsg[pos + 1] - '0');
         pos += 2;
         ESP_LOGI(TAG, "Day: %d", gps_info->day);
         ESP_LOGI(TAG, "Month: %d", gps_info->month);
         ESP_LOGI(TAG, "Year: %d", gps_info->year);
+         ESP_LOGI(TAG,"ddmmyy: %02d-%02d-%02d\n", gps_info->day,  gps_info->month,
+        gps_info->year);
     }
     else
     {
@@ -189,7 +222,7 @@ void process_gps_data(char *data, gps_info_t *gps_info)
 void gps_task(void *pvParameters)
 {
     static const char *RX_TASK_TAG = "RX_TASK";
-    uint8_t *data = (uint8_t *)malloc(GPS_UART_BUF_SIZE);
+    uint8_t data[GPS_UART_BUF_SIZE];
     while (1)
     {
         int len = uart_read_bytes(GPS_UART_PORT, data, GPS_UART_BUF_SIZE - 1, 1000 / portTICK_RATE_MS);
@@ -199,15 +232,12 @@ void gps_task(void *pvParameters)
             ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", len, data);
             ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, len, ESP_LOG_INFO);
             process_gps_data((char *)data, &gps_info);
-           
         }
     }
-    free(data);
 }
 
 void app_main()
 {
-    // Configure UART
     const uart_config_t uart_config = {
         .baud_rate = GPS_UART_BAUDRATE,
         .data_bits = UART_DATA_8_BITS,
@@ -217,14 +247,12 @@ void app_main()
         .source_clk = UART_SCLK_APB,
     };
 
-    static const gps_info_t initial_gps_info = {0};           // Initialize gps_info with all fields set to 0
-    memcpy(&gps_info, &initial_gps_info, sizeof(gps_info_t)); // Copy initial_gps_info to gps_info
+    static const gps_info_t initial_gps_info = {0};
+    memcpy(&gps_info, &initial_gps_info, sizeof(gps_info_t));
 
     uart_driver_install(GPS_UART_PORT, GPS_UART_BUF_SIZE * 2, 0, 0, NULL, 0);
     uart_param_config(GPS_UART_PORT, &uart_config);
     uart_set_pin(GPS_UART_PORT, TX_PIN, RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    ESP_LOGI(TAG, "Year:");
-    // Create GPS task
 
     xTaskCreate(gps_task, "gps_task", 2048, NULL, 5, NULL);
 }
